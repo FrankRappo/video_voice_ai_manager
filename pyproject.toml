@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-voice-ai-manager"
+version = "0.1.0"
+description = "Universal AI-powered video & voice analyzer"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "google-genai>=1.0.0",
+]
+
+[project.optional-dependencies]
+openai = ["openai"]
+whisper = ["faster-whisper"]
+web = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "python-multipart>=0.0.5",
+    "aiofiles>=23.0.0",
+]
+download = ["yt-dlp"]
+all = [
+    "openai",
+    "faster-whisper",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "python-multipart>=0.0.5",
+    "aiofiles>=23.0.0",
+    "yt-dlp",
+    "sounddevice",
+]
+
+[project.scripts]
+vvam = "cli:main"
+
+[tool.setuptools.packages.find]
+include = ["*"]
+
+[tool.setuptools.package-data]
+web = ["templates/*.html", "static/**/*"]

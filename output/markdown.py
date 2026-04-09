@@ -1,0 +1,154 @@
+"""
+Markdown output formatter.
+Generates a readable markdown report with timestamped transcript,
+frame references, and summary — pipe-friendly for any terminal.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from transcribers.base import TranscriptionResult
+from vision.base import FrameAnalysis
+
+
+def _ts(seconds: float) -> str:
+    """Format seconds as HH:MM:SS or MM:SS."""
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    if h > 0:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
+def _duration_str(seconds: float) -> str:
+    """Human-readable duration."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    m = int(seconds // 60)
+    s = int(seconds % 60)
+    if m < 60:
+        return f"{m}m {s}s"
+    h = int(m // 60)
+    m = m % 60
+    return f"{h}h {m}m {s}s"
+
+
+def format_markdown(
+    transcript: TranscriptionResult | None,
+    frame_analyses: list[FrameAnalysis] | None,
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    """
+    Generate a full markdown report.
+
+    Parameters
+    ----------
+    transcript : TranscriptionResult or None
+        Timestamped transcription data.
+    frame_analyses : list[FrameAnalysis] or None
+        Vision analysis results for extracted frames.
+    metadata : dict or None
+        Extra info: source, duration, backend names, etc.
+    """
+    metadata = metadata or {}
+    lines: list[str] = []
+
+    # ── Header ──────────────────────────────────────────────
+    source = metadata.get("source", "Unknown source")
+    lines.append(f"# Video/Voice Analysis Report")
+    lines.append("")
+    lines.append(f"**Source:** `{source}`  ")
+
+    if "duration" in metadata:
+        lines.append(f"**Duration:** {_duration_str(metadata['duration'])}  ")
+    if "language" in metadata:
+        lines.append(f"**Language:** {metadata['language']}  ")
+    if "transcriber" in metadata:
+        lines.append(f"**Transcriber:** {metadata['transcriber']}  ")
+    if "vision" in metadata:
+        lines.append(f"**Vision backend:** {metadata['vision']}  ")
+    if "date" in metadata:
+        lines.append(f"**Date:** {metadata['date']}  ")
+
+    lines.append("")
+
+    # ── Summary ─────────────────────────────────────────────
+    if transcript and transcript.full_text:
+        lines.append("---")
+        lines.append("")
+        lines.append("## Summary")
+        lines.append("")
+        # Show first ~300 chars as a quick summary teaser
+        text = transcript.full_text.strip()
+        if len(text) > 300:
+            lines.append(f"> {text[:300]}...")
+        else:
+            lines.append(f"> {text}")
+        lines.append("")
+
+    # ── Timestamped Transcript ──────────────────────────────
+    if transcript and transcript.segments:
+        lines.append("---")
+        lines.append("")
+        lines.append("## Transcript")
+        lines.append("")
+        lines.append("| Time | Text |")
+        lines.append("|------|------|")
+        for seg in transcript.segments:
+            escaped = seg.text.replace("|", "\\|").replace("\n", " ")
+            lines.append(f"| `{seg.start_ts}` - `{seg.end_ts}` | {escaped} |")
+        lines.append("")
+
+    # ── Frame Analyses ──────────────────────────────────────
+    if frame_analyses:
+        lines.append("---")
+        lines.append("")
+        lines.append("## Frame Analysis")
+        lines.append("")
+        for fa in frame_analyses:
+            lines.append(f"### [{fa.timestamp_str}] Frame")
+            lines.append("")
+            if fa.frame_path:
+                lines.append(f"![frame at {fa.timestamp_str}]({fa.frame_path})")
+                lines.append("")
+            lines.append(fa.description)
+            lines.append("")
+
+    # ── Combined Timeline ───────────────────────────────────
+    if transcript and transcript.segments and frame_analyses:
+        lines.append("---")
+        lines.append("")
+        lines.append("## Timeline")
+        lines.append("")
+
+        # Merge transcript segments and frame analyses by time
+        events: list[tuple[float, str, str]] = []
+        for seg in transcript.segments:
+            events.append((seg.start, "speech", seg.text))
+        for fa in frame_analyses:
+            events.append((fa.timestamp, "frame", fa.description))
+        events.sort(key=lambda e: e[0])
+
+        for ts, kind, text in events:
+            tag = "🎙" if kind == "speech" else "🖼"
+            short = text[:120] + "..." if len(text) > 120 else text
+            lines.append(f"- `{_ts(ts)}` {tag} {short}")
+        lines.append("")
+
+    # ── Full Text ───────────────────────────────────────────
+    if transcript and transcript.full_text:
+        lines.append("---")
+        lines.append("")
+        lines.append("## Full Text")
+        lines.append("")
+        lines.append(transcript.full_text)
+        lines.append("")
+
+    # ── Metadata footer ─────────────────────────────────────
+    lines.append("---")
+    lines.append("")
+    lines.append("*Generated by VVAM (Video Voice AI Manager)*")
+    lines.append("")
+
+    return "\n".join(lines)

@@ -1,0 +1,12 @@
+google-genai>=1.0.0
+fastapi>=0.100.0
+uvicorn>=0.20.0
+python-multipart>=0.0.5
+aiofiles>=23.0.0
+
+# Optional dependencies:
+# pip install openai           # для OpenAI backend
+# pip install faster-whisper    # для локального Whisper
+# pip install openai-whisper    # альтернатива faster-whisper
+# pip install yt-dlp            # для скачивания видео по URL
+# pip install sounddevice       # для записи с микрофона

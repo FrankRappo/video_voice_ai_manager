@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VVAM — Video Voice AI Manager</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--bg4:#30363d;
+  --text:#e6edf3;--text2:#8b949e;--accent:#58a6ff;--accent2:#1f6feb;
+  --green:#3fb950;--red:#f85149;--border:#30363d;--radius:8px;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  background:var(--bg);color:var(--text);line-height:1.5;min-height:100vh}
+a{color:var(--accent);text-decoration:none}
+button{cursor:pointer;font-family:inherit;font-size:14px;border:none;border-radius:var(--radius);
+  padding:8px 16px;background:var(--accent2);color:#fff;transition:.2s}
+button:hover{background:var(--accent)}
+button:disabled{opacity:.5;cursor:not-allowed}
+input,select{font-family:inherit;font-size:14px;background:var(--bg3);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;outline:none}
+input:focus,select:focus{border-color:var(--accent)}
+
+/* Layout */
+.app{max-width:1400px;margin:0 auto;padding:16px}
+header{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border);margin-bottom:16px;flex-wrap:wrap;gap:8px}
+header h1{font-size:20px;font-weight:600}
+header h1 span{color:var(--accent)}
+.settings-btn{background:var(--bg3);font-size:13px}
+
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+
+.panel{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.panel-header{padding:10px 16px;background:var(--bg3);font-size:13px;font-weight:600;
+  text-transform:uppercase;letter-spacing:.5px;color:var(--text2);display:flex;align-items:center;justify-content:space-between}
+
+/* Drop zone */
+.upload-zone{border:2px dashed var(--border);border-radius:var(--radius);padding:40px 20px;
+  text-align:center;margin-bottom:16px;transition:.3s;cursor:pointer;position:relative}
+.upload-zone.drag{border-color:var(--accent);background:rgba(88,166,255,.05)}
+.upload-zone p{color:var(--text2);margin-top:8px;font-size:14px}
+.upload-zone .icon{font-size:36px;color:var(--text2)}
+.upload-zone input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer}
+
+.url-row{display:flex;gap:8px;margin-bottom:16px}
+.url-row input{flex:1}
+
+/* Video player */
+.player-wrap{position:relative;background:#000;border-radius:var(--radius);overflow:hidden;margin-bottom:16px;aspect-ratio:16/9}
+.player-wrap video{width:100%;height:100%;object-fit:contain}
+.player-wrap.empty{display:flex;align-items:center;justify-content:center;color:var(--text2);font-size:14px}
+
+/* Progress */
+.progress-bar{height:4px;background:var(--bg3);border-radius:2px;overflow:hidden;margin-bottom:16px;display:none}
+.progress-bar .fill{height:100%;background:var(--accent);width:0;transition:width .3s}
+.progress-info{font-size:13px;color:var(--text2);margin-bottom:16px;display:none}
+
+/* Transcript */
+.transcript{max-height:400px;overflow-y:auto;padding:12px 16px}
+.seg{padding:4px 0;cursor:pointer;display:flex;gap:10px;border-bottom:1px solid var(--border);font-size:14px}
+.seg:hover{background:var(--bg3)}
+.seg.active{background:rgba(88,166,255,.1)}
+.seg-ts{color:var(--accent);white-space:nowrap;font-variant-numeric:tabular-nums;min-width:70px}
+.seg-text{flex:1}
+
+/* Search */
+.search-box{padding:8px 16px}
+.search-box input{width:100%}
+
+/* Frames */
+.frames-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;padding:12px 16px;max-height:400px;overflow-y:auto}
+.frame-card{border-radius:6px;overflow:hidden;background:var(--bg3);cursor:pointer;transition:.2s}
+.frame-card:hover{transform:scale(1.03)}
+.frame-card img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block}
+.frame-card .fc-ts{padding:4px 8px;font-size:12px;color:var(--text2);text-align:center}
+
+/* Export */
+.export-bar{display:flex;gap:8px;padding:12px 16px;flex-wrap:wrap}
+.export-bar button{font-size:13px;background:var(--bg3)}
+.export-bar button:hover{background:var(--bg4)}
+
+/* Settings modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:100}
+.modal-overlay.show{display:flex}
+.modal{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:24px;width:90%;max-width:440px}
+.modal h2{margin-bottom:16px;font-size:18px}
+.modal label{display:block;font-size:13px;color:var(--text2);margin:12px 0 4px}
+.modal select,.modal input{width:100%}
+.modal-actions{margin-top:20px;display:flex;gap:8px;justify-content:flex-end}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1><span>VVAM</span> — Video Voice AI Manager</h1>
+    <button class="settings-btn" onclick="settingsModal.classList.add('show')">Settings</button>
+  </header>
+
+  <!-- Upload -->
+  <div class="upload-zone" id="dropZone">
+    <div class="icon">&#128193;</div>
+    <p>Drag &amp; drop video or audio file here, or click to select</p>
+    <input type="file" id="fileInput" accept="video/*,audio/*">
+  </div>
+  <div class="url-row">
+    <input type="text" id="urlInput" placeholder="Paste video URL (YouTube, etc.)">
+    <button id="urlBtn" onclick="submitUrl()">Analyze URL</button>
+  </div>
+
+  <!-- Progress -->
+  <div class="progress-bar" id="progressBar"><div class="fill" id="progressFill"></div></div>
+  <div class="progress-info" id="progressInfo"></div>
+
+  <!-- Main grid -->
+  <div class="grid">
+    <div>
+      <!-- Player -->
+      <div class="player-wrap empty" id="playerWrap">
+        <video id="videoEl" controls style="display:none"></video>
+        <span id="playerPlaceholder">No video loaded</span>
+      </div>
+
+      <!-- Frames -->
+      <div class="panel" id="framesPanel" style="display:none">
+        <div class="panel-header">Frames</div>
+        <div class="frames-grid" id="framesGrid"></div>
+      </div>
+    </div>
+
+    <div>
+      <!-- Transcript -->
+      <div class="panel" id="transcriptPanel" style="display:none">
+        <div class="panel-header">
+          <span>Transcript</span>
+          <span id="langBadge" style="font-size:11px"></span>
+        </div>
+        <div class="search-box">
+          <input type="text" id="searchInput" placeholder="Search transcript..." oninput="filterSegments()">
+        </div>
+        <div class="transcript" id="transcriptList"></div>
+      </div>
+
+      <!-- Export -->
+      <div class="panel" id="exportPanel" style="display:none">
+        <div class="panel-header">Export</div>
+        <div class="export-bar">
+          <button onclick="exportFile('md')">Download .md</button>
+          <button onclick="exportFile('json')">Download .json</button>
+          <button onclick="exportFile('srt')">Download .srt</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settingsModal" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="modal">
+    <h2>Settings</h2>
+    <label>Transcriber backend</label>
+    <select id="cfgTranscriber">
+      <option value="gemini">Gemini Native Audio</option>
+      <option value="openai">OpenAI Whisper API</option>
+      <option value="whisper-local">Whisper Local</option>
+    </select>
+    <label>Vision backend</label>
+    <select id="cfgVision">
+      <option value="gemini">Gemini Vision</option>
+      <option value="openai">OpenAI GPT-4o</option>
+      <option value="ollama">Ollama (local)</option>
+    </select>
+    <label>Language (for transcription)</label>
+    <input type="text" id="cfgLang" placeholder="ru, en, auto...">
+    <div class="modal-actions">
+      <button style="background:var(--bg3)" onclick="settingsModal.classList.remove('show')">Cancel</button>
+      <button onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const dropZone = $('#dropZone');
+const fileInput = $('#fileInput');
+const videoEl = $('#videoEl');
+const playerWrap = $('#playerWrap');
+const progressBar = $('#progressBar');
+const progressFill = $('#progressFill');
+const progressInfo = $('#progressInfo');
+const transcriptList = $('#transcriptList');
+const framesGrid = $('#framesGrid');
+const settingsModal = $('#settingsModal');
+
+let currentJobId = null;
+let currentResult = null;
+let allSegments = [];
+let ws = null;
+
+// Settings from localStorage
+const settings = JSON.parse(localStorage.getItem('vvam_settings') || '{}');
+if (settings.transcriber) $('#cfgTranscriber').value = settings.transcriber;
+if (settings.vision) $('#cfgVision').value = settings.vision;
+if (settings.language) $('#cfgLang').value = settings.language;
+
+function saveSettings() {
+  const s = {
+    transcriber: $('#cfgTranscriber').value,
+    vision: $('#cfgVision').value,
+    language: $('#cfgLang').value,
+  };
+  localStorage.setItem('vvam_settings', JSON.stringify(s));
+  Object.assign(settings, s);
+  settingsModal.classList.remove('show');
+}
+
+// Drag & drop
+['dragenter','dragover'].forEach(e => dropZone.addEventListener(e, ev => {ev.preventDefault();dropZone.classList.add('drag')}));
+['dragleave','drop'].forEach(e => dropZone.addEventListener(e, ev => {ev.preventDefault();dropZone.classList.remove('drag')}));
+dropZone.addEventListener('drop', ev => {
+  const file = ev.dataTransfer.files[0];
+  if (file) uploadFile(file);
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) uploadFile(fileInput.files[0]);
+});
+
+function showProgress(pct, msg) {
+  progressBar.style.display = 'block';
+  progressInfo.style.display = 'block';
+  progressFill.style.width = pct + '%';
+  progressInfo.textContent = msg || '';
+}
+
+function hideProgress() {
+  progressBar.style.display = 'none';
+  progressInfo.style.display = 'none';
+}
+
+function connectWS(jobId) {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws/progress`);
+  ws.onmessage = ev => {
+    const d = JSON.parse(ev.data);
+    if (d.job_id !== jobId) return;
+    if (d.status === 'processing') {
+      showProgress(d.progress || 0, d.step || 'Processing...');
+    } else if (d.status === 'done') {
+      showProgress(100, 'Complete!');
+      fetchResult(jobId);
+      setTimeout(hideProgress, 2000);
+    } else if (d.status === 'error') {
+      showProgress(0, 'Error: ' + (d.error || 'Unknown'));
+      progressFill.style.background = 'var(--red)';
+    }
+  };
+  ws.onerror = () => { pollJob(jobId); };
+}
+
+function pollJob(jobId) {
+  const iv = setInterval(async () => {
+    try {
+      const r = await fetch(`/api/status/${jobId}`);
+      const d = await r.json();
+      if (d.status === 'done') {
+        clearInterval(iv);
+        showProgress(100, 'Complete!');
+        renderResult(d.result);
+        setTimeout(hideProgress, 2000);
+      } else if (d.status === 'error') {
+        clearInterval(iv);
+        showProgress(0, 'Error: ' + (d.error || 'Unknown'));
+      } else if (d.status === 'processing') {
+        showProgress(50, 'Processing...');
+      }
+    } catch(e) {}
+  }, 3000);
+}
+
+async function fetchResult(jobId) {
+  const r = await fetch(`/api/status/${jobId}`);
+  const d = await r.json();
+  if (d.status === 'done') renderResult(d.result);
+}
+
+async function uploadFile(file) {
+  const isVideo = file.type.startsWith('video/');
+  const isAudio = file.type.startsWith('audio/') || /\.(mp3|wav|ogg|m4a|flac|aac|opus|wma)$/i.test(file.name);
+
+  // Show video if applicable
+  if (isVideo) {
+    const url = URL.createObjectURL(file);
+    videoEl.src = url;
+    videoEl.style.display = 'block';
+    $('#playerPlaceholder').style.display = 'none';
+    playerWrap.classList.remove('empty');
+  }
+
+  const fd = new FormData();
+  fd.append('file', file);
+  if (settings.transcriber) fd.append('transcriber', settings.transcriber);
+  if (settings.vision) fd.append('vision', settings.vision);
+
+  if (isAudio && !isVideo) {
+    // Direct voice transcription
+    showProgress(30, 'Transcribing...');
+    try {
+      const r = await fetch('/api/voice', {method:'POST', body:fd});
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || 'Failed');
+      renderResult({transcription: d});
+      showProgress(100, 'Done');
+      setTimeout(hideProgress, 2000);
+    } catch(e) {
+      showProgress(0, 'Error: ' + e.message);
+    }
+  } else {
+    // Video — background job
+    showProgress(5, 'Uploading...');
+    try {
+      const r = await fetch('/api/video', {method:'POST', body:fd});
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || 'Failed');
+      currentJobId = d.job_id;
+      showProgress(10, 'Queued...');
+      connectWS(d.job_id);
+    } catch(e) {
+      showProgress(0, 'Error: ' + e.message);
+    }
+  }
+}
+
+async function submitUrl() {
+  const url = $('#urlInput').value.trim();
+  if (!url) return;
+
+  const fd = new FormData();
+  fd.append('url', url);
+  if (settings.transcriber) fd.append('transcriber', settings.transcriber);
+  if (settings.vision) fd.append('vision', settings.vision);
+
+  showProgress(5, 'Downloading video...');
+  try {
+    const r = await fetch('/api/video', {method:'POST', body:fd});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Failed');
+    currentJobId = d.job_id;
+    showProgress(10, 'Queued...');
+    connectWS(d.job_id);
+  } catch(e) {
+    showProgress(0, 'Error: ' + e.message);
+  }
+}
+
+function renderResult(result) {
+  currentResult = result;
+
+  // Transcript
+  if (result.transcription) {
+    const t = result.transcription;
+    allSegments = t.segments || [];
+    $('#transcriptPanel').style.display = 'block';
+    $('#exportPanel').style.display = 'block';
+    if (t.language) $('#langBadge').textContent = t.language.toUpperCase();
+    renderSegments(allSegments);
+  }
+
+  // Frames
+  if (result.frames && result.frames.length > 0) {
+    $('#framesPanel').style.display = 'block';
+    framesGrid.innerHTML = '';
+    result.frames.forEach(f => {
+      const card = document.createElement('div');
+      card.className = 'frame-card';
+      card.onclick = () => seekTo(f.timestamp);
+      if (f.frame_path) {
+        card.innerHTML = `<img src="/api/screenshot?video_path=${encodeURIComponent(f.frame_path)}&timecode=0" alt="frame"><div class="fc-ts">${f.timestamp_str || formatTime(f.timestamp)}</div>`;
+      } else {
+        card.innerHTML = `<div style="padding:16px;font-size:12px;color:var(--text2)">${f.description?.substring(0,80) || ''}</div><div class="fc-ts">${f.timestamp_str || formatTime(f.timestamp)}</div>`;
+      }
+      framesGrid.appendChild(card);
+    });
+  }
+}
+
+function renderSegments(segs) {
+  transcriptList.innerHTML = '';
+  segs.forEach((s, i) => {
+    const div = document.createElement('div');
+    div.className = 'seg';
+    div.dataset.idx = i;
+    div.innerHTML = `<span class="seg-ts">${s.start_ts || formatTime(s.start)}</span><span class="seg-text">${escHtml(s.text)}</span>`;
+    div.onclick = () => seekTo(s.start);
+    transcriptList.appendChild(div);
+  });
+}
+
+function filterSegments() {
+  const q = $('#searchInput').value.toLowerCase().trim();
+  if (!q) { renderSegments(allSegments); return; }
+  const filtered = allSegments.filter(s => s.text.toLowerCase().includes(q));
+  renderSegments(filtered);
+  // Highlight matches
+  transcriptList.querySelectorAll('.seg-text').forEach(el => {
+    el.innerHTML = el.textContent.replace(new RegExp(`(${escRegex(q)})`, 'gi'), '<mark style="background:var(--accent2);color:#fff;border-radius:2px;padding:0 2px">$1</mark>');
+  });
+}
+
+function seekTo(seconds) {
+  if (videoEl.src && videoEl.style.display !== 'none') {
+    videoEl.currentTime = seconds;
+    videoEl.play();
+  }
+}
+
+// Sync transcript highlight with video
+if (videoEl) {
+  videoEl.addEventListener('timeupdate', () => {
+    const t = videoEl.currentTime;
+    transcriptList.querySelectorAll('.seg').forEach(el => {
+      const idx = parseInt(el.dataset.idx);
+      const seg = allSegments[idx];
+      if (seg && t >= seg.start && t < seg.end) {
+        if (!el.classList.contains('active')) {
+          transcriptList.querySelector('.seg.active')?.classList.remove('active');
+          el.classList.add('active');
+          el.scrollIntoView({block:'nearest',behavior:'smooth'});
+        }
+      }
+    });
+  });
+}
+
+function formatTime(s) {
+  if (s == null) return '00:00';
+  const h = Math.floor(s/3600); const m = Math.floor((s%3600)/60); const sec = Math.floor(s%60);
+  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+  return `${m}:${String(sec).padStart(2,'0')}`;
+}
+
+function escHtml(s) { const d=document.createElement('div');d.textContent=s;return d.innerHTML; }
+function escRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
+
+// Export
+function exportFile(fmt) {
+  if (!currentResult) return;
+  let content, mime, ext;
+  const t = currentResult.transcription;
+
+  if (fmt === 'json') {
+    content = JSON.stringify(currentResult, null, 2);
+    mime = 'application/json'; ext = 'json';
+  } else if (fmt === 'srt') {
+    if (!t || !t.segments) return;
+    content = t.segments.map((s, i) =>
+      `${i+1}\n${srtTime(s.start)} --> ${srtTime(s.end)}\n${s.text}\n`
+    ).join('\n');
+    mime = 'text/srt'; ext = 'srt';
+  } else {
+    // Markdown
+    let md = '# Transcription\n\n';
+    if (t && t.segments) {
+      t.segments.forEach(s => {
+        md += `**[${s.start_ts || formatTime(s.start)}]** ${s.text}\n\n`;
+      });
+    }
+    if (currentResult.frames) {
+      md += '\n# Frame Analysis\n\n';
+      currentResult.frames.forEach(f => {
+        md += `## ${f.timestamp_str || formatTime(f.timestamp)}\n${f.description}\n\n`;
+      });
+    }
+    if (currentResult.report_md) md = currentResult.report_md;
+    content = md; mime = 'text/markdown'; ext = 'md';
+  }
+
+  const blob = new Blob([content], {type: mime});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `vvam_export.${ext}`;
+  a.click();
+}
+
+function srtTime(s) {
+  const h=Math.floor(s/3600);const m=Math.floor((s%3600)/60);const sec=Math.floor(s%60);const ms=Math.round((s%1)*1000);
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')},${String(ms).padStart(3,'0')}`;
+}
+
+// Load config on start
+fetch('/api/config').then(r=>r.json()).then(d=>{
+  if(d.transcriber && !settings.transcriber) $('#cfgTranscriber').value=d.transcriber;
+  if(d.vision && !settings.vision) $('#cfgVision').value=d.vision;
+  if(d.whisper_language && !settings.language) $('#cfgLang').value=d.whisper_language;
+}).catch(()=>{});
+</script>
+</body>
+</html>
