@@ -23,18 +23,36 @@ def _is_pipe() -> bool:
     return not sys.stdout.isatty()
 
 
+def _parse_time(ts: str) -> float:
+    """Parse a time string like '00:05', '00:05:30', or '5.0' into seconds."""
+    parts = ts.split(":")
+    if len(parts) == 3:
+        return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+    if len(parts) == 2:
+        return int(parts[0]) * 60 + float(parts[1])
+    return float(ts)
+
+
 # ── Subcommand handlers ─────────────────────────────────────────
 
 async def cmd_video(args: argparse.Namespace, cfg: Config) -> None:
     """Analyze a video file or URL."""
-    from core.video import process_video  # type: ignore[import-not-found]
+    from core.video import VideoAnalyzer
+    from transcribers import get_transcriber
+    from vision import get_vision
 
-    result = await process_video(
+    transcriber = get_transcriber(cfg)
+    vision_backend = get_vision(cfg) if not args.audio_only else None
+    analyzer = VideoAnalyzer(transcriber=transcriber, vision=vision_backend, config=cfg)
+
+    time_from = _parse_time(args.time_from) if args.time_from else None
+    time_to = _parse_time(args.time_to) if args.time_to else None
+
+    result = await analyzer.analyze(
         source=args.source,
-        config=cfg,
         audio_only=args.audio_only,
-        time_from=args.time_from,
-        time_to=args.time_to,
+        time_from=time_from,
+        time_to=time_to,
     )
 
     from output.formatters import get_formatter
@@ -45,11 +63,11 @@ async def cmd_video(args: argparse.Namespace, cfg: Config) -> None:
         "transcriber": cfg.transcriber,
         "vision": cfg.vision,
     }
-    if hasattr(result, "duration"):
+    if result.duration:
         metadata["duration"] = result.duration
 
-    transcript = getattr(result, "transcript", None)
-    frames = getattr(result, "frames", None)
+    transcript = result.transcription
+    frames = result.frames or None
 
     if args.format == "srt":
         text = fmt(transcript)
@@ -61,15 +79,16 @@ async def cmd_video(args: argparse.Namespace, cfg: Config) -> None:
 
 async def cmd_voice(args: argparse.Namespace, cfg: Config) -> None:
     """Analyze voice messages."""
-    from core.voice import process_voice  # type: ignore[import-not-found]
+    from core.voice import VoiceAnalyzer
+    from transcribers import get_transcriber
 
-    result = await process_voice(
-        source=args.source,
-        config=cfg,
-        batch_all=args.all,
-    )
+    transcriber = get_transcriber(cfg)
+    analyzer = VoiceAnalyzer(transcriber=transcriber, config=cfg)
+
+    results = await analyzer.analyze(args.source)
 
     from output.formatters import get_formatter
+    from transcribers.base import TranscriptionResult
     fmt = get_formatter(args.format)
 
     metadata = {
@@ -77,7 +96,15 @@ async def cmd_voice(args: argparse.Namespace, cfg: Config) -> None:
         "transcriber": cfg.transcriber,
     }
 
-    transcript = getattr(result, "transcript", None)
+    # Merge all voice results into a single transcription
+    all_segments = []
+    language = ""
+    for vr in results:
+        all_segments.extend(vr.transcription.segments)
+        if vr.transcription.language and not language:
+            language = vr.transcription.language
+
+    transcript = TranscriptionResult(segments=all_segments, language=language) if all_segments else None
 
     if args.format == "srt":
         text = fmt(transcript)
@@ -89,51 +116,53 @@ async def cmd_voice(args: argparse.Namespace, cfg: Config) -> None:
 
 async def cmd_dictate(args: argparse.Namespace, cfg: Config) -> None:
     """Dictation mode — transcribe from file or microphone."""
-    from core.dictate import process_dictate  # type: ignore[import-not-found]
+    from core.dictate import Dictator
+    from transcribers import get_transcriber
 
-    source = args.file or args.mic
-    result = await process_dictate(source=source, config=cfg)
+    transcriber = get_transcriber(cfg)
+    dictator = Dictator(transcriber=transcriber, config=cfg)
 
-    from output.formatters import get_formatter
-    fmt = get_formatter(args.format)
-
-    transcript = getattr(result, "transcript", None)
-    metadata = {"source": source or "microphone", "transcriber": cfg.transcriber}
-
-    if args.format == "srt":
-        text = fmt(transcript)
+    if args.file:
+        text_result = await dictator.dictate(args.file)
+    elif args.mic:
+        text_result = await dictator.record_and_dictate()
     else:
-        text = fmt(transcript, None, metadata)
+        print("Error: provide --file or --mic", file=sys.stderr)
+        sys.exit(1)
 
-    _output(text, args.output)
+    # For dictate, just output the plain text (pipe-friendly)
+    _output(text_result, args.output)
 
 
 async def cmd_screenshot(args: argparse.Namespace, cfg: Config) -> None:
     """Extract and analyze frames from a video."""
-    from core.screenshot import process_screenshot  # type: ignore[import-not-found]
+    from core.screenshot import ScreenshotExtractor
 
-    result = await process_screenshot(
-        source=args.source,
-        config=cfg,
-        time=args.time,
-        time_from=args.time_from,
-        time_to=args.time_to,
-    )
+    extractor = ScreenshotExtractor(config=cfg)
+    output_dir = cfg.output_dir
 
-    from output.formatters import get_formatter
-    fmt = get_formatter(args.format)
-
-    frames = getattr(result, "frames", None)
-    metadata = {"source": args.source, "vision": cfg.vision}
-
-    text = fmt(None, frames, metadata)
-    _output(text, args.output)
+    if args.time:
+        ts = _parse_time(args.time)
+        path = await extractor.extract_at(args.source, ts, output_dir=output_dir)
+        print(f"Screenshot saved: {path}")
+    elif args.time_from and args.time_to:
+        t_from = _parse_time(args.time_from)
+        t_to = _parse_time(args.time_to)
+        fps = args.fps if args.fps else cfg.video_fps
+        paths = await extractor.extract_range(
+            args.source, t_from, t_to, fps=fps, output_dir=output_dir,
+        )
+        for p in paths:
+            print(f"Screenshot saved: {p}")
+    else:
+        print("Error: provide --time or --from/--to", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_server(args: argparse.Namespace, cfg: Config) -> None:
     """Start the web server."""
-    from web.app import run_server  # type: ignore[import-not-found]
-    run_server(host=args.host, port=args.port, config=cfg)
+    from web.server import main as run_server
+    run_server()
 
 
 def _output(text: str, output_path: str | None) -> None:

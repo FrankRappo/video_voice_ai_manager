@@ -16,13 +16,15 @@ def _srt_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def format_srt(transcript: TranscriptionResult) -> str:
+def format_srt(transcript: TranscriptionResult | None) -> str:
     """
     Generate SRT subtitle content from a transcription.
 
     Each segment becomes one subtitle entry with sequential numbering,
     SRT-format timestamps, and the segment text.
     """
+    if not transcript:
+        return ""
     blocks: list[str] = []
     for i, seg in enumerate(transcript.segments, 1):
         start = _srt_timestamp(seg.start)

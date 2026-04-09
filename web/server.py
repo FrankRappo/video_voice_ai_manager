@@ -30,7 +30,13 @@ _ws_clients: list[WebSocket] = []
 _tmp_dir = Path(tempfile.mkdtemp(prefix="vvam_"))
 
 WEB_DIR = Path(__file__).parent
-app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
+_static_dir = WEB_DIR / "static"
+_static_dir.mkdir(exist_ok=True)
+# Create a placeholder so StaticFiles doesn't fail on empty dir
+_placeholder = _static_dir / ".gitkeep"
+if not any(_static_dir.iterdir()):
+    _placeholder.touch(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 
 async def _broadcast(job_id: str, data: dict):
@@ -90,82 +96,51 @@ async def _process_video(job_id: str, video_path: Path, cfg: Config):
         _jobs[job_id]["status"] = "processing"
         await _broadcast(job_id, {"status": "processing", "progress": 0, "step": "Starting..."})
 
-        result = {"transcription": None, "frames": [], "metadata": {}}
+        from core.video import VideoAnalyzer
 
-        # Extract audio and transcribe
-        await _broadcast(job_id, {"status": "processing", "progress": 10, "step": "Extracting audio..."})
-        audio_path = None
+        transcriber = _get_transcriber(cfg)
+        vision = None
         try:
-            from core.video import extract_audio
-            audio_path = await extract_audio(video_path)
-        except (ImportError, Exception):
-            audio_path = None
+            vision = _get_vision(cfg)
+        except Exception:
+            pass
 
-        if audio_path and Path(audio_path).exists():
-            await _broadcast(job_id, {"status": "processing", "progress": 30, "step": "Transcribing..."})
-            try:
-                transcriber = _get_transcriber(cfg)
-                transcript = await transcriber.transcribe(Path(audio_path))
-                result["transcription"] = {
-                    "full_text": transcript.full_text,
-                    "language": transcript.language,
-                    "segments": [
-                        {"start": s.start, "end": s.end, "text": s.text,
-                         "start_ts": s.start_ts, "end_ts": s.end_ts}
-                        for s in transcript.segments
-                    ],
-                }
-            except Exception as e:
-                result["transcription_error"] = str(e)
+        analyzer = VideoAnalyzer(transcriber=transcriber, vision=vision, config=cfg)
 
-        # Extract and analyze frames
-        await _broadcast(job_id, {"status": "processing", "progress": 60, "step": "Extracting frames..."})
-        frames = []
-        try:
-            from core.video import extract_frames
-            frames = await extract_frames(video_path, fps=cfg.video_fps)
-        except (ImportError, Exception):
-            frames = []
+        await _broadcast(job_id, {"status": "processing", "progress": 20, "step": "Analyzing video..."})
+        video_result = await analyzer.analyze(source=str(video_path))
 
-        if frames:
-            await _broadcast(job_id, {"status": "processing", "progress": 75, "step": "Analyzing frames..."})
-            try:
-                vision = _get_vision(cfg)
-                analyses = await vision.analyze_frames(frames)
-                result["frames"] = [
-                    {"timestamp": a.timestamp, "timestamp_str": a.timestamp_str,
-                     "description": a.description, "frame_path": a.frame_path}
-                    for a in analyses
-                ]
-            except Exception as e:
-                result["frames_error"] = str(e)
+        result = {"transcription": None, "frames": [], "metadata": video_result.metadata}
+
+        if video_result.transcription:
+            t = video_result.transcription
+            result["transcription"] = {
+                "full_text": t.full_text,
+                "language": t.language,
+                "segments": [
+                    {"start": s.start, "end": s.end, "text": s.text,
+                     "start_ts": s.start_ts, "end_ts": s.end_ts}
+                    for s in t.segments
+                ],
+            }
+
+        if video_result.frames:
+            result["frames"] = [
+                {"timestamp": a.timestamp, "timestamp_str": a.timestamp_str,
+                 "description": a.description, "frame_path": a.frame_path}
+                for a in video_result.frames
+            ]
 
         # Generate report
         await _broadcast(job_id, {"status": "processing", "progress": 90, "step": "Generating report..."})
         try:
             from output.markdown import format_markdown
-            from transcribers.base import TranscriptionResult, Segment
-            from vision.base import FrameAnalysis
-
-            transcript_obj = None
-            if result.get("transcription"):
-                t = result["transcription"]
-                transcript_obj = TranscriptionResult(
-                    segments=[Segment(start=s["start"], end=s["end"], text=s["text"]) for s in t["segments"]],
-                    language=t["language"],
-                )
-
-            frame_objs = [
-                FrameAnalysis(timestamp=f["timestamp"], description=f["description"], frame_path=f.get("frame_path", ""))
-                for f in result.get("frames", [])
-            ]
-
             result["report_md"] = format_markdown(
-                transcript=transcript_obj,
-                frame_analyses=frame_objs if frame_objs else None,
+                transcript=video_result.transcription,
+                frame_analyses=video_result.frames or None,
                 metadata={"source": video_path.name},
             )
-        except (ImportError, Exception):
+        except Exception:
             pass
 
         _jobs[job_id]["status"] = "done"
@@ -286,25 +261,20 @@ async def api_screenshot(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid timecode: {timecode}")
 
-    # Try using core.screenshot or fallback to ffmpeg
-    out_path = _tmp_dir / f"frame_{uuid.uuid4().hex[:8]}.jpg"
+    # Extract frame using ScreenshotExtractor
+    out_dir = str(_tmp_dir)
     try:
-        from core.screenshot import extract_frame
-        await extract_frame(vpath, seconds, out_path)
-    except ImportError:
-        import subprocess
-        proc = subprocess.run(
-            ["ffmpeg", "-y", "-ss", str(seconds), "-i", str(vpath),
-             "-frames:v", "1", "-q:v", "2", str(out_path)],
-            capture_output=True,
-        )
-        if proc.returncode != 0:
-            raise HTTPException(status_code=500, detail="Failed to extract frame (ffmpeg)")
+        from core.screenshot import ScreenshotExtractor
+        extractor = ScreenshotExtractor()
+        out_path = await extractor.extract_at(str(vpath), seconds, output_dir=out_dir)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to extract frame: {e}")
 
     if not out_path.exists():
         raise HTTPException(status_code=500, detail="Frame extraction failed")
 
-    return FileResponse(str(out_path), media_type="image/jpeg")
+    mime = "image/png" if str(out_path).endswith(".png") else "image/jpeg"
+    return FileResponse(str(out_path), media_type=mime)
 
 
 @app.get("/api/status/{job_id}")
