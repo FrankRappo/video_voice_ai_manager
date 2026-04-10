@@ -7,3 +7,8 @@ build/
 vvam.json
 vvam_output/
 *.log
+tasks/A*_output.log
+tasks/A*_test_and_fix.md
+tasks/A*_perfect_transcription.md
+tasks/A6_*.md
+test_transcription.py

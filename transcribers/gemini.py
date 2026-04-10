@@ -59,7 +59,7 @@ class GeminiTranscriber(BaseTranscriber):
             return await self._transcribe_standard(audio_path, language)
 
     async def _transcribe_live(self, audio_path: Path, language: str = "") -> TranscriptionResult:
-        """Transcribe using Live API with input_audio_transcription."""
+        """Transcribe using Live API with explicit VAD and dual transcription."""
         try:
             from google import genai
             from google.genai import types
@@ -72,14 +72,14 @@ class GeminiTranscriber(BaseTranscriber):
         wav_path = await self._ensure_wav(audio_path)
         pcm_data = self._read_wav_pcm(wav_path)
 
-        total_duration = len(pcm_data) / 32000.0  # 16kHz * 2 bytes per sample
+        bytes_per_sec = 32000  # 16kHz * 2 bytes per sample
 
-        # Split into segments for Live API (max ~2 min per session for reliability)
-        max_segment_bytes = 32000 * 120  # 2 min = 120 sec
+        # Split into 30-sec segments (optimal for transcription completeness)
+        max_segment_bytes = bytes_per_sec * 30
         audio_segments = []
         for i in range(0, len(pcm_data), max_segment_bytes):
             seg_data = pcm_data[i:i + max_segment_bytes]
-            seg_start = i / 32000.0
+            seg_start = i / float(bytes_per_sec)
             audio_segments.append((seg_start, seg_data))
 
         all_segments = []
@@ -87,7 +87,7 @@ class GeminiTranscriber(BaseTranscriber):
         for seg_start, seg_pcm in audio_segments:
             seg_text = await self._transcribe_live_chunk(client, seg_pcm)
             if seg_text:
-                seg_duration = len(seg_pcm) / 32000.0
+                seg_duration = len(seg_pcm) / float(bytes_per_sec)
                 all_segments.append(Segment(
                     start=seg_start,
                     end=seg_start + seg_duration,
@@ -107,41 +107,70 @@ class GeminiTranscriber(BaseTranscriber):
         )
 
     async def _transcribe_live_chunk(self, client, pcm_data: bytes) -> str:
-        """Transcribe a single chunk of PCM audio via Live API session."""
+        """Transcribe a single chunk of PCM audio via Live API session.
+
+        Uses explicit VAD signals to prevent the model from interrupting
+        audio processing, and collects both input and output transcriptions
+        to maximize coverage.
+        """
         from google.genai import types
 
         config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             input_audio_transcription=types.AudioTranscriptionConfig(),
+            output_audio_transcription=types.AudioTranscriptionConfig(),
+            realtime_input_config=types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    disabled=True,
+                ),
+            ),
+            system_instruction=types.Content(
+                parts=[types.Part(text=(
+                    "Listen to all audio completely. When the user finishes, "
+                    "repeat EVERY single word you heard, verbatim, in the "
+                    "original language. Do not skip, summarize, or translate."
+                ))]
+            ),
         )
 
-        transcript_parts = []
+        input_parts = []
+        output_parts = []
 
         async with client.aio.live.connect(model=self.model, config=config) as session:
-            # Send audio in 0.5-sec chunks at ~4x real-time speed
+            # Signal speech activity start (prevents model from interrupting)
+            await session.send_realtime_input(activity_start=types.ActivityStart())
+
+            # Send audio in 0.5-sec chunks at 2x real-time speed
             chunk_size = 16000  # 0.5 sec of 16kHz 16-bit mono
             for i in range(0, len(pcm_data), chunk_size):
                 chunk = pcm_data[i:i + chunk_size]
                 await session.send_realtime_input(
                     audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000")
                 )
-                await asyncio.sleep(0.12)  # 0.5s audio / 0.12s = ~4x speed
+                await asyncio.sleep(0.25)  # 0.5s audio / 0.25s = 2x speed
 
-            # Signal end of audio
+            # Signal speech activity end and stream end
+            await session.send_realtime_input(activity_end=types.ActivityEnd())
             await session.send_realtime_input(audio_stream_end=True)
 
-            # Collect input transcription
+            # Collect both input and output transcriptions
             async for msg in session.receive():
                 if msg.server_content:
                     sc = msg.server_content
                     if hasattr(sc, "input_transcription") and sc.input_transcription:
-                        text = sc.input_transcription.text
-                        if text:
-                            transcript_parts.append(text)
+                        if sc.input_transcription.text:
+                            input_parts.append(sc.input_transcription.text)
+                    if hasattr(sc, "output_transcription") and sc.output_transcription:
+                        if sc.output_transcription.text:
+                            output_parts.append(sc.output_transcription.text)
                     if sc.turn_complete:
                         break
 
-        return "".join(transcript_parts).strip()
+        input_text = "".join(input_parts).strip()
+        output_text = "".join(output_parts).strip()
+
+        # Return whichever transcription is more complete
+        return input_text if len(input_text) >= len(output_text) else output_text
 
     async def _transcribe_standard(self, audio_path: Path, language: str = "") -> TranscriptionResult:
         """Transcribe using standard generateContent API."""
