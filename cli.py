@@ -41,6 +41,8 @@ async def cmd_video(args: argparse.Namespace, cfg: Config) -> None:
     from transcribers import get_transcriber
     from vision import get_vision
 
+    is_client_feedback = args.format == "client-feedback"
+
     transcriber = get_transcriber(cfg)
     vision_backend = get_vision(cfg) if not args.audio_only else None
     analyzer = VideoAnalyzer(transcriber=transcriber, vision=vision_backend, config=cfg)
@@ -55,9 +57,6 @@ async def cmd_video(args: argparse.Namespace, cfg: Config) -> None:
         time_to=time_to,
     )
 
-    from output.formatters import get_formatter
-    fmt = get_formatter(args.format)
-
     metadata = {
         "source": args.source,
         "transcriber": cfg.transcriber,
@@ -66,13 +65,42 @@ async def cmd_video(args: argparse.Namespace, cfg: Config) -> None:
     if result.duration:
         metadata["duration"] = result.duration
 
-    transcript = result.transcription
-    frames = result.frames or None
+    if is_client_feedback:
+        # Run correlation pipeline using direct multimodal mode
+        # (sends images + transcription in a single API call — much more efficient)
+        from core.correlator import Correlator
+        from output.client_feedback import format_client_feedback
 
-    if args.format == "srt":
-        text = fmt(transcript)
+        correlator = Correlator(api_key=cfg.gemini_api_key, model=cfg.gemini_model)
+
+        if result.frames:
+            # Collect frame paths for direct image mode
+            frame_paths = [
+                (fa.timestamp, Path(fa.frame_path))
+                for fa in result.frames
+                if Path(fa.frame_path).exists()
+            ]
+            if frame_paths:
+                correlation = await correlator.correlate_with_images(
+                    result.transcription, frame_paths, max_frames=15,
+                )
+            else:
+                correlation = await correlator.correlate(result.transcription, result.frames)
+        else:
+            correlation = await correlator.correlate(result.transcription, [])
+
+        text = format_client_feedback(correlation, metadata)
     else:
-        text = fmt(transcript, frames, metadata)
+        from output.formatters import get_formatter
+        fmt = get_formatter(args.format)
+
+        transcript = result.transcription
+        frames = result.frames or None
+
+        if args.format == "srt":
+            text = fmt(transcript)
+        else:
+            text = fmt(transcript, frames, metadata)
 
     _output(text, args.output)
 
@@ -198,7 +226,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_video.add_argument("--vision", choices=["gemini", "openai", "ollama"])
     p_video.add_argument("-o", "--output", help="Output file path")
     p_video.add_argument("-f", "--format", default="markdown",
-                         choices=["markdown", "json", "srt"])
+                         choices=["markdown", "json", "srt", "client-feedback"])
     p_video.add_argument("--chunk", type=int, help="Chunk duration in minutes")
     p_video.add_argument("--audio-only", action="store_true",
                          help="Transcribe audio only, skip vision")

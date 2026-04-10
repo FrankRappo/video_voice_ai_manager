@@ -51,6 +51,7 @@ class VideoAnalyzer:
         time_to: Optional[float] = None,
         fps: Optional[float] = None,
         scene_detect: Optional[bool] = None,
+        vision_prompt: Optional[str] = None,
     ) -> VideoResult:
         """Analyze a video file or URL.
 
@@ -61,6 +62,7 @@ class VideoAnalyzer:
             time_to: End time in seconds.
             fps: Frames per second for extraction (overrides config).
             scene_detect: Use scene detection (overrides config).
+            vision_prompt: Custom prompt for vision analysis.
         """
         work_dir = Path(tempfile.mkdtemp(prefix="vvam_video_"))
         self._temp_dirs.append(work_dir)
@@ -90,6 +92,7 @@ class VideoAnalyzer:
                 return await self._analyze_chunked(
                     video_path, work_dir, effective_from, effective_to,
                     chunk_minutes, audio_only, fps, scene_detect, metadata,
+                    vision_prompt=vision_prompt,
                 )
 
             # Single-pass analysis
@@ -101,7 +104,7 @@ class VideoAnalyzer:
             if not audio_only and self.vision:
                 frames = await self._analyze_frames_segment(
                     video_path, work_dir, effective_from, effective_to,
-                    fps, scene_detect,
+                    fps, scene_detect, vision_prompt=vision_prompt,
                 )
 
             return VideoResult(
@@ -286,6 +289,7 @@ class VideoAnalyzer:
         start: float, end: float,
         fps: Optional[float] = None,
         scene_detect: Optional[bool] = None,
+        vision_prompt: Optional[str] = None,
     ) -> list[FrameAnalysis]:
         """Extract and analyze frames for a segment."""
         if not self.vision:
@@ -295,7 +299,7 @@ class VideoAnalyzer:
         )
         if not frames:
             return []
-        return await self.vision.analyze_frames(frames)
+        return await self.vision.analyze_frames(frames, prompt=vision_prompt or "")
 
     # --- Chunked processing ---
 
@@ -307,6 +311,7 @@ class VideoAnalyzer:
         fps: Optional[float],
         scene_detect: Optional[bool],
         metadata: dict,
+        vision_prompt: Optional[str] = None,
     ) -> VideoResult:
         """Process long video in chunks."""
         chunk_duration = chunk_minutes * 60
@@ -333,6 +338,7 @@ class VideoAnalyzer:
             if not audio_only and self.vision:
                 frames = await self._analyze_frames_segment(
                     video_path, chunk_dir, t, chunk_end, fps, scene_detect,
+                    vision_prompt=vision_prompt,
                 )
                 all_frames.extend(frames)
 

@@ -13,6 +13,7 @@ class FrameAnalysis:
     timestamp: float   # seconds
     description: str
     frame_path: str
+    structured_data: dict | None = None  # JSON-parsed structured analysis (for client-feedback mode)
 
     @property
     def timestamp_str(self) -> str:

@@ -15,6 +15,9 @@ _FORMATTERS: dict[str, Callable] = {
     "srt": format_srt,
 }
 
+# client-feedback is special — handled separately in cmd_video
+# because it takes CorrelationResult, not transcript+frames
+
 
 def get_formatter(name: str) -> Callable:
     """
