@@ -37,6 +37,51 @@ LIVE_ONLY_MODELS = {
 }
 
 
+def _strip_overlap(prev: str, cur: str, window_words: int = 30) -> str:
+    """Strip from `cur` the prefix that duplicates the tail of `prev`.
+
+    Chunks are sent with a few seconds of audio overlap so words straddling a
+    seam aren't lost; that overlap shows up as duplicated text at the boundary.
+    The model transcribes the same overlap slightly differently in each window
+    ("Авито" vs "Авита", "сделать и чтобы" vs "будете делать и чтобы"), so a
+    char-exact match misses most cases. Fuzzy word-level matching via
+    difflib handles the discrepancies.
+    """
+    import re
+    from difflib import SequenceMatcher
+
+    def tokens(s: str):
+        return [(m.start(), m.end(), m.group().lower())
+                for m in re.finditer(r"\w+", s)]
+
+    prev_toks = tokens(prev)
+    cur_toks = tokens(cur)
+    if not prev_toks or not cur_toks:
+        return cur.lstrip()
+
+    prev_tail = prev_toks[-window_words:]
+    cur_head = cur_toks[:window_words]
+    prev_words = [t[2] for t in prev_tail]
+    cur_words = [t[2] for t in cur_head]
+
+    matcher = SequenceMatcher(None, prev_words, cur_words, autojunk=False)
+    match = matcher.find_longest_match(0, len(prev_words), 0, len(cur_words))
+
+    # Need at least 2 matching words, anchored near prev's tail and cur's head.
+    if match.size < 2:
+        return cur.lstrip()
+    anchored_in_prev = match.a + match.size >= len(prev_words) - 2
+    anchored_in_cur = match.b <= 3
+    if not (anchored_in_prev and anchored_in_cur):
+        return cur.lstrip()
+
+    cut_word_idx = match.b + match.size
+    if cut_word_idx >= len(cur_head):
+        return ""
+    cut_char = cur_head[cut_word_idx][0]
+    return cur[cut_char:].lstrip(" ,.!?-—")
+
+
 class GeminiTranscriber(BaseTranscriber):
 
     def __init__(self, api_key: str, model: str = "gemini-2.5-flash-native-audio-latest"):
@@ -74,13 +119,22 @@ class GeminiTranscriber(BaseTranscriber):
 
         bytes_per_sec = 32000  # 16kHz * 2 bytes per sample
 
-        # Split into 30-sec segments (optimal for transcription completeness)
-        max_segment_bytes = bytes_per_sec * 30
+        # 30-sec windows with 4-sec overlap so boundary words are captured by
+        # at least one chunk (the model occasionally drops words straddling a
+        # chunk seam — e.g. "Яндекс|СДЭК" → "Яндекс is, дек"). Window kept at
+        # 30s because longer windows at realtime send rate trip the Live API
+        # websocket keepalive.
+        segment_sec = 30
+        overlap_sec = 4
+        step_bytes = bytes_per_sec * (segment_sec - overlap_sec)
+        max_segment_bytes = bytes_per_sec * segment_sec
         audio_segments = []
-        for i in range(0, len(pcm_data), max_segment_bytes):
+        for i in range(0, len(pcm_data), step_bytes):
             seg_data = pcm_data[i:i + max_segment_bytes]
             seg_start = i / float(bytes_per_sec)
             audio_segments.append((seg_start, seg_data))
+            if i + max_segment_bytes >= len(pcm_data):
+                break
 
         all_segments = []
 
@@ -88,11 +142,14 @@ class GeminiTranscriber(BaseTranscriber):
             seg_text = await self._transcribe_live_chunk(client, seg_pcm)
             if seg_text:
                 seg_duration = len(seg_pcm) / float(bytes_per_sec)
-                all_segments.append(Segment(
-                    start=seg_start,
-                    end=seg_start + seg_duration,
-                    text=seg_text,
-                ))
+                if all_segments:
+                    seg_text = _strip_overlap(all_segments[-1].text, seg_text)
+                if seg_text:
+                    all_segments.append(Segment(
+                        start=seg_start,
+                        end=seg_start + seg_duration,
+                        text=seg_text,
+                    ))
 
         # Clean up temp wav
         if wav_path != audio_path and wav_path.exists():
@@ -140,14 +197,20 @@ class GeminiTranscriber(BaseTranscriber):
             # Signal speech activity start (prevents model from interrupting)
             await session.send_realtime_input(activity_start=types.ActivityStart())
 
-            # Send audio in 0.5-sec chunks at 2x real-time speed
+            # Send audio in 0.5-sec chunks at 2x real-time speed.
+            # 1x trips the Live API websocket keepalive; the model handles 2x
+            # fine as long as we leave a grace period before closing activity.
             chunk_size = 16000  # 0.5 sec of 16kHz 16-bit mono
             for i in range(0, len(pcm_data), chunk_size):
                 chunk = pcm_data[i:i + chunk_size]
                 await session.send_realtime_input(
                     audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000")
                 )
-                await asyncio.sleep(0.25)  # 0.5s audio / 0.25s = 2x speed
+                await asyncio.sleep(0.25)
+
+            # Grace period so model finishes transcribing the tail before we
+            # close activity — otherwise last 1–2 seconds get truncated.
+            await asyncio.sleep(1.5)
 
             # Signal speech activity end and stream end
             await session.send_realtime_input(activity_end=types.ActivityEnd())
@@ -166,11 +229,13 @@ class GeminiTranscriber(BaseTranscriber):
                     if sc.turn_complete:
                         break
 
+        # input_transcription is the verbatim STT of user audio.
+        # output_transcription is the model's response (paraphrase/repetition)
+        # and is unreliable — it can summarize or hallucinate. Always trust
+        # input_transcription; fall back to output only if input is empty.
         input_text = "".join(input_parts).strip()
         output_text = "".join(output_parts).strip()
-
-        # Return whichever transcription is more complete
-        return input_text if len(input_text) >= len(output_text) else output_text
+        return input_text or output_text
 
     async def _transcribe_standard(self, audio_path: Path, language: str = "") -> TranscriptionResult:
         """Transcribe using standard generateContent API."""
