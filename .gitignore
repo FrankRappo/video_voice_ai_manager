@@ -12,3 +12,9 @@ tasks/A*_test_and_fix.md
 tasks/A*_perfect_transcription.md
 tasks/A6_*.md
 test_transcription.py
+
+# Private inputs, generated results and task-local temporary files.
+input/
+tmp/
+vvam_output_*/
+output/*/
