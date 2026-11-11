@@ -5,10 +5,14 @@ for native audio models, or standard generateContent for regular models.
 """
 import json
 import asyncio
+import logging
 import wave
 from pathlib import Path
 
 from .base import BaseTranscriber, TranscriptionResult, Segment
+
+
+logger = logging.getLogger(__name__)
 
 
 TRANSCRIBE_PROMPT = """Transcribe this audio with precise timestamps.
@@ -138,8 +142,14 @@ class GeminiTranscriber(BaseTranscriber):
 
         all_segments = []
 
-        for seg_start, seg_pcm in audio_segments:
+        logger.info("Live transcription: duration=%.1fs; chunks=%d",
+                    len(pcm_data) / bytes_per_sec, len(audio_segments))
+        for index, (seg_start, seg_pcm) in enumerate(audio_segments, 1):
+            logger.info("Chunk %d/%d started; audio offset=%.1fs",
+                        index, len(audio_segments), seg_start)
             seg_text = await self._transcribe_live_chunk(client, seg_pcm)
+            logger.info("Chunk %d/%d complete; text_received=%s",
+                        index, len(audio_segments), bool(seg_text))
             if seg_text:
                 seg_duration = len(seg_pcm) / float(bytes_per_sec)
                 if all_segments:
@@ -193,7 +203,9 @@ class GeminiTranscriber(BaseTranscriber):
         input_parts = []
         output_parts = []
 
+        logger.info("Connecting to Gemini Live")
         async with client.aio.live.connect(model=self.model, config=config) as session:
+            logger.info("Live connection established; sending audio")
             # Signal speech activity start (prevents model from interrupting)
             await session.send_realtime_input(activity_start=types.ActivityStart())
 
@@ -216,6 +228,7 @@ class GeminiTranscriber(BaseTranscriber):
             await session.send_realtime_input(activity_end=types.ActivityEnd())
             await session.send_realtime_input(audio_stream_end=True)
 
+            logger.info("Audio sent; waiting for Gemini response")
             # Collect both input and output transcriptions
             async for msg in session.receive():
                 if msg.server_content:
@@ -246,10 +259,12 @@ class GeminiTranscriber(BaseTranscriber):
 
         client = genai.Client(api_key=self.api_key)
 
+        logger.info("Uploading audio to Gemini")
         upload = await asyncio.to_thread(
             client.files.upload, file=str(audio_path)
         )
 
+        logger.info("Upload complete; requesting transcription")
         prompt = TRANSCRIBE_PROMPT
         if language:
             prompt += f"\nExpected language: {language}"
@@ -260,6 +275,7 @@ class GeminiTranscriber(BaseTranscriber):
             contents=[upload, prompt],
         )
 
+        logger.info("Gemini response received; parsing transcript")
         return self._parse_response(response.text, language)
 
     async def _ensure_wav(self, audio_path: Path) -> Path:

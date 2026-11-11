@@ -2,6 +2,7 @@
 Voice message analysis — transcribe voice messages from Telegram, WhatsApp, etc.
 """
 import asyncio
+from contextlib import suppress
 import logging
 import tempfile
 from dataclasses import dataclass
@@ -83,6 +84,7 @@ class VoiceAnalyzer:
         if ext not in SUPPORTED_FORMATS:
             raise ValueError(f"Unsupported format: {ext}")
 
+        logger.info("Voice processing started; backend=%s", self.transcriber.name())
         messenger = self._detect_messenger(file_path)
 
         # Convert to WAV if needed
@@ -90,10 +92,29 @@ class VoiceAnalyzer:
             audio_path = file_path
             tmp_path = None
         else:
+            logger.info("Converting audio to WAV")
             audio_path, tmp_path = await self._convert_to_wav(file_path)
+            logger.info("WAV conversion complete")
 
         try:
-            transcription = await self.transcriber.transcribe(audio_path)
+            logger.info("Transcription started")
+            async def report_wait():
+                started = asyncio.get_running_loop().time()
+                while True:
+                    await asyncio.sleep(30)
+                    logger.info(
+                        "Transcription still pending; elapsed=%.0fs (not a progress confirmation)",
+                        asyncio.get_running_loop().time() - started,
+                    )
+
+            heartbeat = asyncio.create_task(report_wait())
+            try:
+                transcription = await self.transcriber.transcribe(audio_path)
+            finally:
+                heartbeat.cancel()
+                with suppress(asyncio.CancelledError):
+                    await heartbeat
+            logger.info("Transcription complete; segments=%d", len(transcription.segments))
             return VoiceResult(
                 file=str(file_path),
                 transcription=transcription,

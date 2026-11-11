@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -281,6 +282,15 @@ def main() -> None:
     if not args.command:
         parser.print_help()
         sys.exit(1)
+
+    # Keep progress on stderr so stdout remains machine-readable.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    # Do not expose SDK request URLs, headers, or payloads in progress logs.
+    for name in ("httpx", "httpcore", "google", "websockets"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     # Load config and apply CLI overrides
     cfg = Config.load(args.config)
